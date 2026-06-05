@@ -1,0 +1,14 @@
+{
+  "_comment": "Custom density entries — add your own here. Format: food_name_lowercase: {density_g_per_ml, notes}",
+  "butter chicken": { "density_g_per_ml": 1.05, "notes": "Rich tomato cream gravy" },
+  "shahi paneer": { "density_g_per_ml": 1.00, "notes": "Cream-based paneer" },
+  "pav bhaji": { "density_g_per_ml": 0.95, "notes": "Mashed vegetable curry" },
+  "vada pav": { "density_g_per_ml": 0.72, "notes": "Fried potato dumpling in bun" },
+  "chaat": { "density_g_per_ml": 0.75, "notes": "Mixed street food" },
+  "dahi vada": { "density_g_per_ml": 0.95, "notes": "Lentil dumplings in yogurt" },
+  "halwa": { "density_g_per_ml": 1.10, "notes": "Dense semolina/carrot sweet" },
+  "kheer": { "density_g_per_ml": 1.05, "notes": "Rice pudding" },
+  "ladoo": { "density_g_per_ml": 1.20, "notes": "Dense sweet ball" },
+  "jalebi": { "density_g_per_ml": 1.15, "notes": "Sugar-soaked fried sweet" },
+  "masala chai": { "density_g_per_ml": 1.01, "notes": "Spiced milk tea" }
+}

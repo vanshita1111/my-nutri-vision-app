@@ -1,0 +1,270 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# NutriVision — Production Docker Compose
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Prerequisites:
+#   1. Copy .env.example → .env and fill in every value
+#   2. Place SSL certs at ./nginx/certs/fullchain.pem + privkey.pem
+#      (e.g. obtained via certbot: certbot certonly --standalone -d api.yourdomain.com)
+#   3. Set POSTGRES_PASSWORD and REDIS_PASSWORD to strong random strings
+#   4. Point your domain DNS A record to this server's IP
+#
+# Scaling workers:
+#   docker compose -f docker-compose.prod.yml up -d --scale worker=3
+
+networks:
+  backend:          # Internal network — DB/Redis not exposed to host
+    driver: bridge
+  frontend:         # Only nginx and api are on this network
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  image_storage:
+  model_cache:      # Pre-downloaded ML model weights shared across workers
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    networks: [backend]
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER:-nutrition}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB:       nutrition_vision
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.utf8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nutrition} -d nutrition_vision"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+        reservations:
+          memory: 256m
+    # No ports exposed — only accessible within 'backend' network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: always
+    networks: [backend]
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+      --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 600m
+        reservations:
+          memory: 128m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ── FastAPI (uvicorn + gunicorn) ────────────────────────────────────────────
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
+    image: nutrition-vision-api:${IMAGE_TAG:-latest}
+    restart: always
+    networks: [backend, frontend]
+    env_file: .env
+    environment:
+      APP_ENV:              production
+      DATABASE_URL:         postgresql+asyncpg://${POSTGRES_USER:-nutrition}:${POSTGRES_PASSWORD}@postgres:5432/nutrition_vision
+      REDIS_URL:            redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL:    redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/1
+      LOG_LEVEL:            warning
+    volumes:
+      - ./nutrition_engine:/app/nutrition_engine:ro
+      - ./models:/app/models:ro
+      - image_storage:/app/local_image_storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Run migrations then start gunicorn with 2 uvicorn workers
+    command: >
+      sh -c "
+        echo 'Running database migrations...' &&
+        alembic upgrade head &&
+        echo 'Starting API server...' &&
+        gunicorn app.main:app
+          --workers 2
+          --worker-class uvicorn.workers.UvicornWorker
+          --bind 0.0.0.0:8000
+          --timeout 120
+          --graceful-timeout 30
+          --keep-alive 5
+          --access-logfile -
+          --error-logfile -
+          --log-level warning
+      "
+    expose: ["8000"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+        reservations:
+          memory: 256m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  # ── Celery worker (ML pipeline) ─────────────────────────────────────────────
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: nutrition-vision-api:${IMAGE_TAG:-latest}
+    restart: always
+    networks: [backend]
+    env_file: .env
+    environment:
+      APP_ENV:              production
+      DATABASE_URL:         postgresql+asyncpg://${POSTGRES_USER:-nutrition}:${POSTGRES_PASSWORD}@postgres:5432/nutrition_vision
+      REDIS_URL:            redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL:    redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/1
+      DEVICE:               ${DEVICE:-cpu}
+      LOG_LEVEL:            warning
+    volumes:
+      - ./nutrition_engine:/app/nutrition_engine:ro
+      - ./models:/app/models:ro
+      - image_storage:/app/local_image_storage
+      - model_cache:/root/.cache              # Cache HuggingFace/YOLO weights
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # concurrency=1: each worker loads ML models once; scale via --scale worker=N
+    command: >
+      celery -A app.tasks.celery_app worker
+        --loglevel=warning
+        --concurrency=1
+        --max-tasks-per-child=100
+        --queues=analysis
+        --hostname=worker@%h
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: 4g      # ML models need headroom
+          cpus: "2.0"
+        reservations:
+          memory: 1g
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  # ── Nginx (SSL termination + reverse proxy) ─────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    restart: always
+    networks: [frontend]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t && curl -fs http://localhost/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+        reservations:
+          memory: 32m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ── Flower (Celery dashboard — password protected) ──────────────────────────
+  flower:
+    image: nutrition-vision-api:${IMAGE_TAG:-latest}
+    restart: always
+    networks: [backend, frontend]
+    env_file: .env
+    environment:
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+    command: >
+      celery -A app.tasks.celery_app flower
+        --port=5555
+        --url-prefix=flower
+        --basic-auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:?Set FLOWER_PASSWORD in .env}
+        --max-tasks=1000
+    expose: ["5555"]
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"

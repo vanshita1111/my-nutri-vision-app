@@ -1,0 +1,117 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Indian Food Dataset — YOLOv8 Training Config
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# This config combines three sources:
+#   1. Indian Food Images dataset (Kaggle) — ~4,000 images, 80 classes
+#   2. Food-101 subset with Indian-adjacent dishes
+#   3. Custom labelled images (add to training/data/indian_food/images/)
+#
+# Run prepare_dataset.py --dataset indian to populate training/data/indian_food/
+#
+# Training command:
+#   from ultralytics import YOLO
+#   model = YOLO("yolov8m.pt")          # start from COCO pretrained
+#   model.train(
+#       data="models/configs/indian_food_dataset.yaml",
+#       epochs=100,
+#       imgsz=640,
+#       batch=16,
+#       device="mps",                   # M-series Mac; use "cuda" on GPU server
+#       project="training/runs",
+#       name="indian_food_yolo",
+#       pretrained=True,
+#       augment=True,
+#   )
+
+path:  training/data/indian_food   # Root dataset directory
+train: images/train                # Relative to path
+val:   images/val                  # Relative to path
+test:  images/test                 # Optional held-out test set
+
+# Number of classes
+nc: 50
+
+# Class names — common Indian dishes + universal food groups
+names:
+  # ── Rice dishes ─────────────────────────────────────────────────────────────
+  - biryani
+  - pulao
+  - fried_rice
+  - khichdi
+  - plain_rice
+
+  # ── Breads ──────────────────────────────────────────────────────────────────
+  - roti_chapati
+  - naan
+  - paratha
+  - puri
+  - dosa
+  - idli
+  - uttapam
+
+  # ── Curries & gravies ────────────────────────────────────────────────────────
+  - dal_tadka
+  - dal_makhani
+  - paneer_butter_masala
+  - palak_paneer
+  - chana_masala
+  - rajma
+  - chicken_curry
+  - mutton_curry
+  - fish_curry
+  - aloo_gobi
+  - baingan_bharta
+
+  # ── Street food ─────────────────────────────────────────────────────────────
+  - samosa
+  - vada_pav
+  - pav_bhaji
+  - bhel_puri
+  - pani_puri
+  - chole_bhature
+  - aloo_tikki
+
+  # ── Snacks & sides ──────────────────────────────────────────────────────────
+  - pakora
+  - dhokla
+  - poha
+  - upma
+  - raita
+  - papad
+  - pickle_achar
+
+  # ── Sweets ──────────────────────────────────────────────────────────────────
+  - gulab_jamun
+  - jalebi
+  - halwa
+  - kheer
+  - barfi
+  - ladoo
+
+  # ── Universal food items ─────────────────────────────────────────────────────
+  - egg
+  - salad
+  - soup
+  - sandwich
+  - pizza
+  - burger
+  - noodles
+
+  # ── Drinks ──────────────────────────────────────────────────────────────────
+  - lassi
+  - chai_tea
+  - juice
+
+# ── Augmentation hints (used by prepare_dataset.py) ──────────────────────────
+augmentation:
+  hsv_h:       0.015    # Hue variation (colour of sauces/gravies varies a lot)
+  hsv_s:       0.7      # Saturation
+  hsv_v:       0.4      # Brightness
+  degrees:     10       # Rotation (plates may be tilted)
+  translate:   0.1
+  scale:       0.5
+  fliplr:      0.5      # Horizontal flip
+  flipud:      0.0      # No vertical flip (food orientation matters)
+  mosaic:      1.0
+  mixup:       0.1

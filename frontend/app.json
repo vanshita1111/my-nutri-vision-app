@@ -1,0 +1,43 @@
+{
+  "expo": {
+    "name": "NutriVision",
+    "slug": "nutrition-vision",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.nutrivision.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "NutriVision needs camera access to analyse your meals.",
+        "NSPhotoLibraryUsageDescription": "Choose a meal photo from your library for analysis."
+      }
+    },
+    "android": {
+      "package": "com.nutrivision.app",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "NutriVision needs camera access to analyse your meals."
+        }
+      ]
+    ],
+    "scheme": "nutrivision",
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {
+        "origin": false
+      }
+    }
+  }
+}

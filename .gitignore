@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Model weights (large binary files — use DVC or direct download)
+models/weights/*.pt
+models/weights/*.onnx
+models/weights/*.pth
+models/weights/*.safetensors
+
+# Training artifacts
+training/data/food101/food-101.tar.gz
+training/data/food101/food-101/
+training/data/nutrition5k/
+training/experiments/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Local image storage (dev)
+backend/local_image_storage/
+
+# Docker
+.docker/
+
+# Node / React Native
+frontend/node_modules/
+frontend/.expo/
+frontend/dist/
+frontend/build/
+frontend/.cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Notebooks — clear outputs before commit
+training/notebooks/*.ipynb
