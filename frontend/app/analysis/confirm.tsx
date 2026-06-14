@@ -9,6 +9,7 @@
  */
 
 import { useState, useCallback } from "react";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   View,
   Text,
@@ -101,6 +102,7 @@ function PortionRow({
 export default function ConfirmScreen() {
   const { jobId, result, clear } = useConfirmStore();
   const qc = useQueryClient();
+  const insets = useSafeAreaInsets();
 
   // Per-item multipliers keyed by index
   const [multipliers, setMultipliers] = useState<Record<number, number>>(() =>
@@ -173,7 +175,7 @@ export default function ConfirmScreen() {
   const hiddenIndexed  = indexedItems.filter(({ item }) =>  item.is_hidden_ingredient);
 
   return (
-    <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: insets.top + 12 }]}>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} hitSlop={8}>
@@ -195,6 +197,7 @@ export default function ConfirmScreen() {
             { label: "P", value: adjustedTotal.protein_g, color: "#4CAF50" },
             { label: "C", value: adjustedTotal.carbs_g,   color: "#FF9800" },
             { label: "F", value: adjustedTotal.fat_g,     color: "#F44336" },
+            { label: "Fi", value: adjustedTotal.fiber_g,  color: "#9C27B0" },
           ].map((m) => (
             <View key={m.label} style={styles.macroPill}>
               <View style={[styles.macroDot, { backgroundColor: m.color }]} />
@@ -250,7 +253,16 @@ export default function ConfirmScreen() {
       </TouchableOpacity>
 
       <TouchableOpacity
-        onPress={() => { clear(); router.replace("/(tabs)/camera"); }}
+        onPress={() => {
+          Alert.alert(
+            "Discard analysis?",
+            "Your meal analysis will be lost.",
+            [
+              { text: "Keep", style: "cancel" },
+              { text: "Discard", style: "destructive", onPress: () => { clear(); router.replace("/(tabs)/camera"); } },
+            ]
+          );
+        }}
         style={styles.discardBtn}
       >
         <Text style={styles.discardBtnText}>Discard</Text>

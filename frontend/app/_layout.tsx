@@ -68,7 +68,7 @@ export default function RootLayout() {
         <StatusBar style="auto" />
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="index" />
-          <Stack.Screen name="onboarding" />
+          <Stack.Screen name="onboarding/index" />
           <Stack.Screen name="(tabs)" />
           <Stack.Screen name="analysis/[jobId]" options={{ presentation: "modal", headerShown: true, title: "Meal Analysis" }} />
           <Stack.Screen name="analysis/confirm"  options={{ presentation: "card",  headerShown: false }} />

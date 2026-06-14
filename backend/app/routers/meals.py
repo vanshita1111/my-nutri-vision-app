@@ -16,11 +16,12 @@ from app.schemas.nutrition import MealSummary, MealDetail, FoodItemDetail, Daily
 
 
 def _bust_coaching_cache(user_id: str) -> None:
-    """Delete the 12-hour Redis coaching cache so the next request regenerates with fresh data."""
+    """Delete coaching + buddy context caches so the next request regenerates with fresh data."""
     try:
         import redis as _redis
         r = _redis.from_url(settings.REDIS_URL, decode_responses=True)
         r.delete(f"nv:coaching:weekly:{user_id}")
+        r.delete(f"nv:buddy:ctx:{user_id}")
     except Exception:
         pass
 
@@ -32,6 +33,29 @@ class PortionAdjustment(BaseModel):
 
 class PortionAdjustmentsRequest(BaseModel):
     adjustments: list[PortionAdjustment]
+
+
+class ManualFoodItemRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=200)
+    grams: float = Field(gt=0, le=5000)
+    calories: float = Field(default=0.0, ge=0)
+    protein_g: float = Field(default=0.0, ge=0)
+    fat_g: float = Field(default=0.0, ge=0)
+    carbs_g: float = Field(default=0.0, ge=0)
+    fiber_g: float = Field(default=0.0, ge=0)
+    nutrition_source: str = Field(default="manual")
+
+
+class PatchFoodItemRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=200)
+    grams: float = Field(gt=0, le=5000)
+    calories: float = Field(default=0.0, ge=0)
+    protein_g: float = Field(default=0.0, ge=0)
+    fat_g: float = Field(default=0.0, ge=0)
+    carbs_g: float = Field(default=0.0, ge=0)
+    fiber_g: float = Field(default=0.0, ge=0)
+    nutrition_source: str = Field(default="manual")
+
 
 router = APIRouter()
 
@@ -183,6 +207,95 @@ async def delete_food_item(
     meal.total_fat_g     = round(sum(fi.fat_g     or 0 for fi in remaining), 2)
     meal.total_carbs_g   = round(sum(fi.carbs_g   or 0 for fi in remaining), 2)
     meal.total_fiber_g   = round(sum(fi.fiber_g   or 0 for fi in remaining), 2)
+
+    await db.commit()
+    await db.refresh(meal)
+    _bust_coaching_cache(current_user.id)
+    return _meal_to_detail(meal)
+
+
+@router.patch("/meals/{meal_id}/items/{item_id}", response_model=MealDetail)
+async def patch_food_item(
+    meal_id: str,
+    item_id: str,
+    body: PatchFoodItemRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Replace a food item's label and nutrition data (correct a misidentification)."""
+    from sqlalchemy.orm import selectinload
+
+    stmt = select(Meal).where(Meal.id == meal_id).options(selectinload(Meal.food_items))
+    result = await db.execute(stmt)
+    meal = result.scalar_one_or_none()
+    if not meal or meal.user_id != current_user.id:
+        raise HTTPException(404, "Meal not found.")
+
+    item = next((fi for fi in meal.food_items if fi.id == item_id), None)
+    if not item:
+        raise HTTPException(404, "Food item not found.")
+
+    item.label = body.label
+    item.estimated_grams = body.grams
+    item.calories = body.calories
+    item.protein_g = body.protein_g
+    item.fat_g = body.fat_g
+    item.carbs_g = body.carbs_g
+    item.fiber_g = body.fiber_g
+    item.nutrition_source = body.nutrition_source
+    item.gram_confidence = "manual"
+
+    meal.total_calories  = round(sum(fi.calories  or 0 for fi in meal.food_items), 2)
+    meal.total_protein_g = round(sum(fi.protein_g or 0 for fi in meal.food_items), 2)
+    meal.total_fat_g     = round(sum(fi.fat_g     or 0 for fi in meal.food_items), 2)
+    meal.total_carbs_g   = round(sum(fi.carbs_g   or 0 for fi in meal.food_items), 2)
+    meal.total_fiber_g   = round(sum(fi.fiber_g   or 0 for fi in meal.food_items), 2)
+
+    await db.commit()
+    await db.refresh(meal)
+    _bust_coaching_cache(current_user.id)
+    return _meal_to_detail(meal)
+
+
+@router.post("/meals/{meal_id}/items", response_model=MealDetail)
+async def add_food_item(
+    meal_id: str,
+    body: ManualFoodItemRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually add a food item to a saved meal and recompute meal totals."""
+    from sqlalchemy.orm import selectinload
+    from app.models.food_item import FoodItem
+    import uuid
+
+    stmt = select(Meal).where(Meal.id == meal_id).options(selectinload(Meal.food_items))
+    result = await db.execute(stmt)
+    meal = result.scalar_one_or_none()
+    if not meal or meal.user_id != current_user.id:
+        raise HTTPException(404, "Meal not found.")
+
+    fi = FoodItem(
+        id=str(uuid.uuid4()),
+        meal_id=meal_id,
+        label=body.label,
+        estimated_grams=body.grams,
+        gram_confidence="manual",
+        calories=body.calories,
+        protein_g=body.protein_g,
+        fat_g=body.fat_g,
+        carbs_g=body.carbs_g,
+        fiber_g=body.fiber_g,
+        nutrition_source=body.nutrition_source,
+        is_hidden_ingredient=False,
+    )
+    db.add(fi)
+
+    meal.total_calories  = round(sum((f.calories  or 0) for f in meal.food_items) + body.calories,  2)
+    meal.total_protein_g = round(sum((f.protein_g or 0) for f in meal.food_items) + body.protein_g, 2)
+    meal.total_fat_g     = round(sum((f.fat_g     or 0) for f in meal.food_items) + body.fat_g,     2)
+    meal.total_carbs_g   = round(sum((f.carbs_g   or 0) for f in meal.food_items) + body.carbs_g,   2)
+    meal.total_fiber_g   = round(sum((f.fiber_g   or 0) for f in meal.food_items) + body.fiber_g,   2)
 
     await db.commit()
     await db.refresh(meal)

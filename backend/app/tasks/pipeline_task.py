@@ -13,6 +13,7 @@ import os
 import tempfile
 import uuid
 
+from celery.signals import worker_ready
 from app.tasks.celery_app import celery_app
 from app.core.redis_store import job_set_processing, job_set_complete, job_set_failed
 from app.core.logging import setup_logging
@@ -21,6 +22,16 @@ from app.core.logging import setup_logging
 # ourselves so that all log output is structured from the first task.
 setup_logging()
 log = logging.getLogger(__name__)
+
+
+@worker_ready.connect
+def _pre_warm_pipeline(sender, **kwargs):
+    """Load models at worker startup so the first analysis task isn't slow."""
+    try:
+        _get_pipeline()
+        log.info("pipeline pre-warmed on worker startup")
+    except Exception as exc:
+        log.warning("pipeline pre-warm failed (non-fatal): %s", exc)
 
 
 # ── Helper: run async code from sync Celery task ──────────────────────────────
@@ -37,38 +48,50 @@ def _run(coro):
 # ── Main task ─────────────────────────────────────────────────────────────────
 
 @celery_app.task(bind=True, name="pipeline.run_analysis", max_retries=2)
-def run_analysis_pipeline(self, job_id: str, s3_key: str, user_id: str):
+def run_analysis_pipeline(self, job_id: str, s3_keys: "list[str] | str", user_id: str):
     """
     Main analysis pipeline Celery task.
 
+    Accepts s3_keys as either a list (multi-photo submission) or a single string
+    (legacy single-photo format — kept for backward compatibility).
+
     1. Mark job as processing in Redis
-    2. Download image from S3 (or local dev storage) to a temp file
+    2. Download all images from S3 to temp files
     3. Load NutritionPipeline models (lazy — cached per worker process)
-    4. Run full 9-stage pipeline
+    4. Run full pipeline (multi-image aware in vision mode)
     5. Persist result to Postgres
     6. Mark job as complete in Redis
     On any exception: mark job as failed and retry up to 2 times.
     """
-    log.info("pipeline_task started job_id=%s user_id=%s s3_key=%s", job_id, user_id, s3_key)
+    # Normalise: legacy single-key string → list
+    if isinstance(s3_keys, str):
+        s3_keys = [s3_keys]
+
+    log.info(
+        "pipeline_task started job_id=%s user_id=%s photos=%d",
+        job_id, user_id, len(s3_keys),
+    )
     job_set_processing(job_id)
 
-    tmp_path = None
+    tmp_paths: list[str] = []
     try:
-        # ── Download image ────────────────────────────────────────────────────
         from app.services.s3_service import download_image_to_temp
 
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-            tmp_path = tmp.name
+        # Download all images to individual temp files
+        for s3_key in s3_keys:
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                tmp_path = tmp.name
+            _run(download_image_to_temp(s3_key, tmp_path))
+            tmp_paths.append(tmp_path)
+            log.debug("pipeline_task downloaded job_id=%s key=%s path=%s", job_id, s3_key, tmp_path)
 
-        _run(download_image_to_temp(s3_key, tmp_path))
-        log.debug("pipeline_task downloaded image job_id=%s path=%s", job_id, tmp_path)
-
-        # ── Pipeline + Persist (single event loop) ───────────────────────────
-        # Both must run in one _run() call so asyncpg connections stay bound
-        # to the same event loop — using two separate _run() calls causes
-        # "another operation is in progress" errors on the second call.
+        # Both pipeline + DB persist run in one event loop so asyncpg connections
+        # stay bound to the same loop (two separate _run() calls would cause
+        # "another operation is in progress" errors on asyncpg).
         pipeline = _get_pipeline()
-        result_dict = _run(_analyze_and_persist(pipeline, tmp_path, job_id, user_id, s3_key))
+        result_dict = _run(
+            _analyze_and_persist(pipeline, tmp_paths, job_id, user_id, s3_keys)
+        )
 
         if result_dict.get("error") and not result_dict.get("items"):
             log.warning(
@@ -92,8 +115,9 @@ def run_analysis_pipeline(self, job_id: str, s3_key: str, user_id: str):
         raise self.retry(exc=exc, countdown=10)
 
     finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        for p in tmp_paths:
+            if p and os.path.exists(p):
+                os.unlink(p)
 
 
 # ── Per-process pipeline singleton ───────────────────────────────────────────
@@ -121,10 +145,12 @@ def _get_pipeline():
 
 # ── Combined pipeline + persist (single event loop) ──────────────────────────
 
-async def _analyze_and_persist(pipeline, tmp_path: str, job_id: str, user_id: str, s3_key: str) -> dict:
+async def _analyze_and_persist(
+    pipeline, tmp_paths: "list[str]", job_id: str, user_id: str, s3_keys: "list[str]"
+) -> dict:
     """Run the full pipeline then persist to DB — all in one event loop so
     asyncpg connections stay bound to the correct loop throughout."""
-    result_dict = await pipeline.analyze(tmp_path)
+    result_dict = await pipeline.analyze(tmp_paths)
 
     # Calculate blood sugar impact whenever we have real food items
     if result_dict.get("items") and not result_dict.get("error"):
@@ -137,13 +163,13 @@ async def _analyze_and_persist(pipeline, tmp_path: str, job_id: str, user_id: st
             log.warning("blood_sugar_estimator failed (non-fatal): %s", bs_exc)
 
     if not (result_dict.get("error") and not result_dict.get("items")):
-        await _persist_result(job_id, user_id, s3_key, result_dict)
+        await _persist_result(job_id, user_id, s3_keys, result_dict)
     return result_dict
 
 
 # ── DB persistence ────────────────────────────────────────────────────────────
 
-async def _persist_result(job_id: str, user_id: str, s3_key: str, result: dict):
+async def _persist_result(job_id: str, user_id: str, s3_keys: "list[str]", result: dict):
     """Save analysis result to PostgreSQL (meal + food_items rows).
 
     Creates a fresh engine with NullPool on every call so that asyncpg
@@ -170,7 +196,8 @@ async def _persist_result(job_id: str, user_id: str, s3_key: str, result: dict):
                 id=str(uuid.uuid4()),
                 user_id=user_id,
                 analysis_job_id=job_id,
-                image_s3_key=s3_key,
+                image_s3_key=s3_keys[0],        # primary (backwards compat)
+                all_image_s3_keys=s3_keys,       # all photos — training data asset
                 total_calories=total.get("calories", 0),
                 total_protein_g=total.get("protein_g", 0),
                 total_fat_g=total.get("fat_g", 0),

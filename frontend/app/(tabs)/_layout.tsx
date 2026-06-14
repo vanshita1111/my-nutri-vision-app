@@ -85,6 +85,17 @@ function PlanIcon({ color }: { color: string }) {
   );
 }
 
+function BuddyIcon({ color }: { color: string }) {
+  return (
+    <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
+      <Path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke={color} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
+      <Circle cx={9}  cy={10} r={1} fill={color} />
+      <Circle cx={12} cy={10} r={1} fill={color} />
+      <Circle cx={15} cy={10} r={1} fill={color} />
+    </Svg>
+  );
+}
+
 function ProfileIcon({ color }: { color: string }) {
   return (
     <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
@@ -145,9 +156,20 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="buddy"
+        options={{
+          title: "Buddy",
+          headerShown: false,
+          tabBarIcon: ({ color, focused }) => (
+            <AnimatedIcon focused={focused}><BuddyIcon color={color} /></AnimatedIcon>
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="plan"
         options={{
           title: "Plan",
+          href: null,   // hidden from tab bar, still accessible via router
           tabBarIcon: ({ color, focused }) => (
             <AnimatedIcon focused={focused}><PlanIcon color={color} /></AnimatedIcon>
           ),

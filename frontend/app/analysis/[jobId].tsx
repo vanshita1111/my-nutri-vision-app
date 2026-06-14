@@ -3,7 +3,8 @@
  * Polls the API until the job is complete, then displays the nutrition breakdown.
  */
 
-import { useEffect, useCallback } from "react";
+
+import React, { useState } from "react";
 import {
   View,
   ScrollView,
@@ -23,6 +24,12 @@ const POLL_INTERVAL_MS = 2000;
 export default function AnalysisResultScreen() {
   const { jobId } = useLocalSearchParams<{ jobId: string }>();
   const { setConfirmData } = useConfirmStore();
+  const [rating, setRating] = useState<"accurate" | "roughly" | "inaccurate" | null>(null);
+
+  function submitRating(r: "accurate" | "roughly" | "inaccurate") {
+    setRating(r);
+    api.rateAnalysis(jobId, r).catch(() => {}); // fire-and-forget
+  }
 
   const { data: job, error } = useQuery<AnalysisJob>({
     queryKey: ["analysis", jobId],
@@ -59,6 +66,21 @@ export default function AnalysisResultScreen() {
 
   const result = job.result!;
 
+  if (!result.items || result.items.length === 0) {
+    return (
+      <View style={styles.center}>
+        <Text style={{ fontSize: 40, marginBottom: 12 }}>🍽️</Text>
+        <Text style={styles.loadingText}>No food detected</Text>
+        <Text style={styles.subText}>
+          {result.llm_notes?.trim() || "We couldn't identify any food items. Try a clearer photo with food well-lit and centred."}
+        </Text>
+        <TouchableOpacity style={[styles.retryBtn, { marginTop: 24 }]} onPress={() => router.back()}>
+          <Text style={styles.retryText}>Try another photo</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
   return (
     <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
       {/* Total macro summary */}
@@ -76,7 +98,7 @@ export default function AnalysisResultScreen() {
       {result.items.filter((it) => it.is_hidden_ingredient).length > 0 && (
         <>
           <Text style={[styles.sectionTitle, { marginTop: 24 }]}>
-            🫙 Hidden ingredients (estimated)
+            Hidden ingredients (estimated)
           </Text>
           {result.items
             .filter((it) => it.is_hidden_ingredient)
@@ -94,15 +116,48 @@ export default function AnalysisResultScreen() {
         </>
       )}
 
-      {/* LLM notes */}
+      {/* AI notes */}
       {!!result.llm_notes?.trim() && (
         <View style={styles.notesCard}>
-          <Text style={styles.notesTitle}>🤖 Dietitian AI notes</Text>
+          <Text style={styles.notesTitle}>AI Dietitian notes</Text>
           <Text style={styles.notesText}>{result.llm_notes.trim()}</Text>
         </View>
       )}
 
-      {/* Save / Log button — goes to confirm screen for portion adjustment */}
+      {/* ── Accuracy rating ──────────────────────────────────────────────── */}
+      <View style={styles.ratingCard}>
+        {rating === null ? (
+          <>
+            <Text style={styles.ratingQuestion}>Was this analysis accurate?</Text>
+            <View style={styles.ratingRow}>
+              {(
+                [
+                  { value: "accurate",   label: "Accurate",  color: "#4CAF50" },
+                  { value: "roughly",    label: "Roughly",   color: "#FF9800" },
+                  { value: "inaccurate", label: "Off",       color: "#F44336" },
+                ] as const
+              ).map(({ value, label, color }) => (
+                <TouchableOpacity
+                  key={value}
+                  style={[styles.ratingBtn, { borderColor: color }]}
+                  onPress={() => submitRating(value)}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[styles.ratingBtnText, { color }]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </>
+        ) : (
+          <Text style={styles.ratingThanks}>
+            {rating === "accurate" ? "+ Thank you — great to know!" :
+             rating === "roughly"  ? "~ Thanks, noted for improvement." :
+                                     "- Thanks for the feedback, we'll improve."}
+          </Text>
+        )}
+      </View>
+
+      {/* Save / Log button */}
       <TouchableOpacity
         style={styles.saveBtn}
         onPress={() => {
@@ -110,7 +165,7 @@ export default function AnalysisResultScreen() {
           router.push("/analysis/confirm");
         }}
       >
-        <Text style={styles.saveBtnText}>Confirm portions &amp; save</Text>
+        <Text style={styles.saveBtnText}>Confirm portions & save</Text>
       </TouchableOpacity>
     </ScrollView>
   );
@@ -206,8 +261,22 @@ const styles = StyleSheet.create({
   notesTitle: { fontWeight: "700", marginBottom: 6, color: "#2E7D32" },
   notesText: { color: "#388E3C", lineHeight: 20 },
 
+  ratingCard: {
+    backgroundColor: "#fff", borderRadius: 14, padding: 16,
+    marginTop: 20, alignItems: "center",
+    shadowColor: "#000", shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
+  },
+  ratingQuestion: { fontSize: 14, fontWeight: "600", color: "#333", marginBottom: 12 },
+  ratingRow:      { flexDirection: "row", gap: 10 },
+  ratingBtn: {
+    flex: 1, paddingVertical: 10, borderRadius: 10,
+    borderWidth: 1.5, alignItems: "center",
+  },
+  ratingBtnText: { fontSize: 13, fontWeight: "700" },
+  ratingThanks:  { fontSize: 13, color: "#666", fontStyle: "italic", textAlign: "center" },
+
   saveBtn: {
-    marginTop: 28, backgroundColor: "#4CAF50",
+    marginTop: 16, backgroundColor: "#4CAF50",
     borderRadius: 14, padding: 18, alignItems: "center",
   },
   saveBtnText: { color: "#fff", fontSize: 17, fontWeight: "700" },

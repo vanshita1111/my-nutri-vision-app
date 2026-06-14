@@ -6,7 +6,7 @@
 import { useState, useCallback } from "react";
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
-  ActivityIndicator, RefreshControl,
+  RefreshControl,
 } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";
@@ -36,10 +36,10 @@ const GOAL_LABELS: Record<string, string> = {
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
-function StatCard({ emoji, value, label, sub }: { emoji: string; value: string; label: string; sub?: string }) {
+function StatCard({ symbol, value, label, sub }: { symbol: string; value: string; label: string; sub?: string }) {
   return (
     <View style={styles.statCard}>
-      <Text style={styles.statEmoji}>{emoji}</Text>
+      <Text style={styles.statSymbol}>{symbol}</Text>
       <Text style={styles.statValue}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
       {sub ? <Text style={styles.statSub}>{sub}</Text> : null}
@@ -155,7 +155,7 @@ export default function PlanScreen() {
   if (!profile?.goal || !profile?.weight_kg) {
     return (
       <View style={styles.emptyWrap}>
-        <Text style={styles.emptyEmoji}>🎯</Text>
+        <Text style={styles.emptySymbol}>◎</Text>
         <Text style={styles.emptyTitle}>Set your goal first</Text>
         <Text style={styles.emptySub}>
           Add your weight, height, and goal in Profile to get a personalised workout plan and supplement guide.
@@ -212,18 +212,18 @@ export default function PlanScreen() {
       {/* Stats row */}
       <View style={styles.statsRow}>
         <StatCard
-          emoji="👟"
+          symbol="›"
           value={rec.daily_steps.toLocaleString()}
           label="Steps / day"
         />
         <StatCard
-          emoji="💧"
+          symbol="~"
           value={`${rec.water_glasses}`}
           label="Glasses / day"
           sub={`${rec.water_ml} ml`}
         />
         <StatCard
-          emoji="🏋️"
+          symbol="+"
           value={`${rec.workout_plan.filter(d => d.workout_type !== "Rest").length}`}
           label="Workout days"
           sub="per week"
@@ -306,6 +306,7 @@ const styles = StyleSheet.create({
 
   emptyWrap:    { flex: 1, alignItems: "center", justifyContent: "center", padding: 32 },
   emptyEmoji:   { fontSize: 56, marginBottom: 16 },
+  emptySymbol:  { fontSize: 48, fontWeight: "300", color: "#4CAF50", marginBottom: 16 },
   emptyTitle:   { fontSize: 22, fontWeight: "800", color: "#212121", textAlign: "center" },
   emptySub:     { color: "#888", textAlign: "center", marginTop: 8, lineHeight: 22, fontSize: 14 },
   emptyBtn:     { marginTop: 24, backgroundColor: "#4CAF50", borderRadius: 14, paddingHorizontal: 28, paddingVertical: 14 },
@@ -329,7 +330,7 @@ const styles = StyleSheet.create({
     flex: 1, backgroundColor: "#fff", borderRadius: 14, padding: 14, alignItems: "center",
     shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 4, elevation: 1,
   },
-  statEmoji: { fontSize: 24, marginBottom: 6 },
+  statSymbol: { fontSize: 22, fontWeight: "700", color: "#4CAF50", marginBottom: 6 },
   statValue: { fontSize: 20, fontWeight: "800", color: "#212121" },
   statLabel: { fontSize: 10, color: "#888", marginTop: 2, textAlign: "center" },
   statSub:   { fontSize: 10, color: "#aaa", textAlign: "center" },

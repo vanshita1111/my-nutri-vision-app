@@ -17,9 +17,13 @@ class Meal(Base):
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     analysis_job_id: Mapped[Optional[str]] = mapped_column(String(36), index=True)
 
-    # Image
+    # Image — primary key kept for backwards compat; all keys stored for training data
     image_s3_key: Mapped[Optional[str]] = mapped_column(String(500))
     image_thumbnail_key: Mapped[Optional[str]] = mapped_column(String(500))
+    all_image_s3_keys: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+
+    # Training signal — 1-tap user accuracy rating collected post-analysis
+    accuracy_rating: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     # Aggregated nutrition (denormalised for fast history queries)
     total_calories: Mapped[Optional[float]] = mapped_column(Float)

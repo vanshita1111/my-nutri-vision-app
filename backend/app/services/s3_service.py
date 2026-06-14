@@ -25,10 +25,12 @@ def _get_s3_client():
     )
 
 
-async def upload_image_bytes(image_data: bytes, job_id: str, content_type: str) -> str:
-    """Upload raw image bytes; returns S3 key (or local path in dev mode)."""
+async def upload_image_bytes(image_data: bytes, job_id: str, content_type: str, index: int = 1) -> str:
+    """Upload raw image bytes; returns S3 key (or local path in dev mode).
+    index is 1-based and used to name multi-photo submissions image_1, image_2, etc.
+    """
     ext = "jpg" if "jpeg" in content_type else content_type.split("/")[-1]
-    key = f"{settings.S3_PREFIX}/{job_id}/original.{ext}"
+    key = f"{settings.S3_PREFIX}/{job_id}/image_{index}.{ext}"
 
     if _is_local_mode():
         local_path = _LOCAL_STORAGE_DIR / key
@@ -45,6 +47,18 @@ async def upload_image_bytes(image_data: bytes, job_id: str, content_type: str) 
         ExtraArgs={"ContentType": content_type},
     )
     return key
+
+
+async def upload_multiple_images(
+    images: list[tuple[bytes, str]], job_id: str
+) -> list[str]:
+    """Upload 1–4 images concurrently; returns list of S3 keys in submission order."""
+    import asyncio as _asyncio
+    tasks = [
+        upload_image_bytes(data, job_id, ct, idx)
+        for idx, (data, ct) in enumerate(images, 1)
+    ]
+    return list(await _asyncio.gather(*tasks))
 
 
 async def download_image_to_temp(s3_key: str, local_path: str) -> None:

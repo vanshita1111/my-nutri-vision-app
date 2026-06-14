@@ -9,7 +9,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 from app.config import settings
 from app.core.logging import setup_logging
-from app.routers import analysis, meals, users, nutrition, coaching
+from app.routers import analysis, meals, users, nutrition, coaching, buddy
 
 # Initialise structured logging before anything else runs
 setup_logging()
@@ -62,6 +62,7 @@ app.include_router(meals.router,     prefix="/api/v1", tags=["meals"])
 app.include_router(users.router,     prefix="/api/v1", tags=["users"])
 app.include_router(nutrition.router, prefix="/api/v1", tags=["nutrition"])
 app.include_router(coaching.router,  prefix="/api/v1", tags=["coaching"])
+app.include_router(buddy.router,     prefix="/api/v1", tags=["buddy"])
 
 
 # ── Health ───────────────────────────────────────────────────────────────────

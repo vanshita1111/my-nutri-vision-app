@@ -157,6 +157,8 @@ class LLMValidator:
                 self._call_claude, food_items, estimated_weights
             )
             parsed = json.loads(_strip_fences(response_text))
+            if not isinstance(parsed, dict):
+                raise ValueError(f"Claude returned non-object JSON ({type(parsed).__name__})")
             return self._merge_results(food_items, parsed)
         except Exception as e:
             print(f"[LLMValidator] Claude API error: {e}")
@@ -231,33 +233,76 @@ class LLMValidator:
 
         return enriched, metadata
 
-    async def analyze_image_with_vision(self, image_path: str) -> dict:
+    def _encode_image(self, image_path: str) -> str:
+        """Resize and base64-encode a single image for the Claude API."""
+        try:
+            import cv2 as _cv2
+            img = _cv2.imread(image_path)
+            if img is not None:
+                h, w = img.shape[:2]
+                max_dim = 1024
+                if max(h, w) > max_dim:
+                    scale = max_dim / max(h, w)
+                    img = _cv2.resize(
+                        img, (int(w * scale), int(h * scale)),
+                        interpolation=_cv2.INTER_AREA,
+                    )
+                _, buf = _cv2.imencode(".jpg", img, [_cv2.IMWRITE_JPEG_QUALITY, 85])
+                return base64.standard_b64encode(buf.tobytes()).decode("utf-8")
+        except Exception:
+            pass
+        # Fallback: read raw bytes
+        with open(image_path, "rb") as f:
+            return base64.standard_b64encode(f.read()).decode("utf-8")
+
+    async def analyze_image_with_vision(self, image_paths: "str | list[str]") -> dict:
         """
-        Full vision-first analysis: reads the image, sends it to Claude Vision,
-        and returns a complete nutrition report dict (same shape as pipeline._build_report).
-        Used when YOLO / SAM2 model weights are absent.
+        Full vision-first analysis: encodes 1–4 images and sends them to Claude
+        Vision in a single message so it can cross-reference food quantity with
+        nutrition labels, packaging, and multiple angles.
+        Returns a nutrition report dict (same shape as pipeline._build_report).
         """
+        if isinstance(image_paths, str):
+            image_paths = [image_paths]
+
         if not _ANTHROPIC_KEY:
             return self._vision_fallback_mock()
 
+        response_text = ""
         try:
-            with open(image_path, "rb") as f:
-                image_bytes = f.read()
-            image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+            images_b64 = [self._encode_image(p) for p in image_paths]
 
             response_text = await asyncio.to_thread(
-                self._call_claude_vision, image_b64
+                self._call_claude_vision, images_b64
             )
             parsed = json.loads(_strip_fences(response_text))
+            if not isinstance(parsed, dict):
+                raise ValueError(f"Claude returned non-object JSON ({type(parsed).__name__}): {response_text[:300]}")
 
-            # Build enriched items directly from Claude's validated_items.
-            # Do NOT use _merge_results([], parsed) — that function merges
-            # Claude corrections INTO a YOLO detection list; when called with
-            # an empty list it discards every validated_item.
+            # ── Normalise validated_items ──────────────────────────────────
+            # Claude occasionally returns items as a dict keyed by name,
+            # or wraps each item as a JSON-encoded string. Handle all forms.
+            raw_items = parsed.get("validated_items", [])
+            if isinstance(raw_items, dict):
+                raw_items = list(raw_items.values())
+            elif not isinstance(raw_items, list):
+                raw_items = []
+
             enriched = []
-            for v in parsed.get("validated_items", []):
+            for raw_v in raw_items:
+                # Unwrap JSON-string-encoded item if needed
+                if isinstance(raw_v, str):
+                    try:
+                        raw_v = json.loads(raw_v)
+                    except Exception:
+                        continue
+                if not isinstance(raw_v, dict):
+                    continue
+                v = raw_v
                 grams = v.get("validated_grams") or v.get("original_grams") or 0
-                per_100g = v.get("nutrition_per_100g", {})
+                per_100g = v.get("nutrition_per_100g") or {}
+                if not isinstance(per_100g, dict):
+                    per_100g = {}
                 factor = grams / 100.0
                 enriched.append({
                     "label": v.get("corrected_label") or v.get("original_label") or "unknown food",
@@ -268,9 +313,26 @@ class LLMValidator:
                     "is_hidden_ingredient": False,
                 })
 
-            for hidden in parsed.get("hidden_ingredients", []):
+            # ── Normalise hidden_ingredients ───────────────────────────────
+            raw_hidden = parsed.get("hidden_ingredients", [])
+            if isinstance(raw_hidden, dict):
+                raw_hidden = list(raw_hidden.values())
+            elif not isinstance(raw_hidden, list):
+                raw_hidden = []
+
+            for raw_h in raw_hidden:
+                if isinstance(raw_h, str):
+                    try:
+                        raw_h = json.loads(raw_h)
+                    except Exception:
+                        continue
+                if not isinstance(raw_h, dict):
+                    continue
+                hidden = raw_h
                 grams = hidden.get("estimated_grams", 0)
-                per_100g = hidden.get("nutrition_per_100g", {})
+                per_100g = hidden.get("nutrition_per_100g") or {}
+                if not isinstance(per_100g, dict):
+                    per_100g = {}
                 factor = grams / 100.0
                 enriched.append({
                     "label": hidden.get("name", "unknown"),
@@ -318,57 +380,112 @@ class LLMValidator:
                 "analyzed_at": datetime.now(timezone.utc).isoformat(),
             }
         except Exception as e:
-            print(f"[LLMValidator] Vision analysis error: {e}")
+            print(f"[LLMValidator] Vision analysis error: {e} | response snippet: {response_text[:400]!r}")
             return self._vision_fallback_mock()
 
-    def _call_claude_vision(self, image_b64: str) -> str:
+    def _call_claude_vision(self, images_b64: list) -> str:
+        """Send 1–4 images to Claude Vision in a single message.
+
+        Photo roles inferred by position:
+          Photo 1 — the food itself (quantity / portion visible)
+          Photo 2 — nutrition facts label or packaging (if present)
+          Photos 3-4 — additional angles / close-ups
+
+        Claude uses all photos together for maximum accuracy: it reads exact
+        macros from a nutrition label and applies them to the portion size it
+        can see in the food photo, instead of estimating from appearance alone.
+        """
         client = self._get_client()
+
+        n = len(images_b64)
+        if n == 1:
+            photo_context = (
+                "You have been given 1 photo of a meal or food item."
+            )
+        else:
+            roles = ["Photo 1: the food / portion being eaten"]
+            if n >= 2:
+                roles.append("Photo 2: likely a nutrition facts label or product packaging")
+            for i in range(3, n + 1):
+                roles.append(f"Photo {i}: additional angle or close-up")
+            photo_context = (
+                f"You have been given {n} photos of the same food/meal:\n"
+                + "\n".join(f"  • {r}" for r in roles)
+                + "\n\nCross-reference ALL photos. "
+                  "If a nutrition label is present, use its exact macro values "
+                  "and scale them to the portion size visible in the food photo. "
+                  "This gives much higher accuracy than estimating from appearance alone."
+            )
+
         prompt = (
-            "You are a nutrition expert. Look at this food photo and identify EVERY food item visible.\n\n"
-            "For each item provide:\n"
-            "1. The exact food name (be specific: 'sliced cucumber', 'cherry tomatoes', not just 'vegetable')\n"
-            "2. Estimated weight in grams based on typical portion and visual size\n"
-            "3. Accurate nutritional values per 100g (use USDA/IFCT 2017 data)\n\n"
-            "Also identify any hidden cooking ingredients (oil, ghee, butter, salt) if visible or likely.\n\n"
-            "Return ONLY this JSON — no prose, no markdown:\n"
+            f"{photo_context}\n\n"
+            "You are a senior registered dietitian specialising in Indian cuisine with access to IFCT 2017 and USDA FoodData.\n\n"
+            "IDENTIFICATION — be maximally specific:\n"
+            "  - 'dal makhani' not 'dal' (dal makhani has ~8g fat/100g from butter+cream vs 0.4g for plain toor dal)\n"
+            "  - 'aloo paratha with ghee' not 'paratha'\n"
+            "  - 'masala dosa with potato filling' not 'dosa'\n"
+            "  - For packaged foods, read the brand and product name from the label.\n\n"
+            "WEIGHT ESTIMATION — use all visual cues:\n"
+            "  - Standard Indian steel katori (small bowl) = 150–180 ml ≈ 120–150g for dal/curry\n"
+            "  - Standard roti / chapati = 30–35g per piece\n"
+            "  - Standard paratha = 60–80g per piece\n"
+            "  - Dinner plate rice serving = 150–200g cooked\n"
+            "  - If a hand, coin, or other reference object is visible, use it to calibrate size.\n"
+            "  - If a nutrition label is present in any photo, read the serving size directly from it.\n\n"
+            "HIDDEN INGREDIENTS — always consider:\n"
+            "  - Ghee/butter brushed on roti, paratha, naan (typically 5–10g per piece)\n"
+            "  - Cooking oil in sabzi/curry (typically 10–15g per 150g serving)\n"
+            "  - Cream/malai in rich curries (dal makhani, butter chicken, shahi paneer)\n"
+            "  - Sugar in chai, mithai, packaged drinks\n\n"
+            "NUTRITION SOURCE — preference order:\n"
+            "  1. Nutrition label in photo (set nutrition_source: 'label')\n"
+            "  2. IFCT 2017 for Indian foods (set nutrition_source: 'ifct')\n"
+            "  3. USDA FoodData for others (set nutrition_source: 'usda')\n\n"
+            "Return ONLY valid JSON — no prose, no markdown fences:\n"
             "{\n"
             '  "validated_items": [\n'
             "    {\n"
             '      "original_label": "exact food name",\n'
             '      "corrected_label": "exact food name",\n'
-            '      "original_grams": estimated_weight,\n'
-            '      "validated_grams": estimated_weight,\n'
+            '      "original_grams": 100,\n'
+            '      "validated_grams": 100,\n'
             '      "weight_plausible": true,\n'
             '      "nutrition_per_100g": {\n'
             '        "calories": 0, "protein_g": 0, "fat_g": 0, "carbs_g": 0, "fiber_g": 0\n'
             "      },\n"
-            '      "nutrition_source": "usda"\n'
+            '      "nutrition_source": "label"\n'
             "    }\n"
             "  ],\n"
             '  "hidden_ingredients": [],\n'
             '  "overall_confidence": "high",\n'
-            '  "confidence_reason": "reason",\n'
-            '  "cultural_notes": "notes",\n'
-            '  "meal_balance_notes": "notes"\n'
+            '  "confidence_reason": "Nutrition label present — exact values used",\n'
+            '  "cultural_notes": "",\n'
+            '  "meal_balance_notes": ""\n'
             "}"
         )
+
+        # Build content: one image block per photo, then the text prompt
+        content: list = []
+        for img_b64 in images_b64:
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": img_b64,
+                },
+            })
+        content.append({"type": "text", "text": prompt})
+
         message = client.messages.create(
             model=_CLAUDE_MODEL,
             max_tokens=_MAX_TOKENS,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/jpeg",
-                            "data": image_b64,
-                        },
-                    },
-                    {"type": "text", "text": prompt},
-                ],
-            }],
+            system=(
+                "You are a senior registered dietitian with deep expertise in Indian cuisine, "
+                "IFCT 2017, and USDA FoodData. You estimate food weights and macros from photos "
+                "with high precision. You always return valid JSON exactly matching the requested schema."
+            ),
+            messages=[{"role": "user", "content": content}],
         )
         return message.content[0].text
 
@@ -377,7 +494,7 @@ class LLMValidator:
         return {
             "items": [],
             "total": {"calories": 0.0, "protein_g": 0.0, "fat_g": 0.0, "carbs_g": 0.0, "fiber_g": 0.0},
-            "llm_notes": "Analysis unavailable — Anthropic API key not configured.",
+            "llm_notes": "Analysis temporarily unavailable — please try again.",
             "llm_confidence": "low",
             "analysis_version": "2.0-vision",
             "analyzed_at": datetime.now(timezone.utc).isoformat(),

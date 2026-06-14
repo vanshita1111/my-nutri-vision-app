@@ -18,7 +18,7 @@ export function useAnalysis() {
 
   // Submit photo → get job_id
   const submitMutation = useMutation({
-    mutationFn: (photoPath: string) => api.submitAnalysis(photoPath),
+    mutationFn: (photoPaths: string | string[]) => api.submitAnalysis(photoPaths),
     onSuccess: (job) => {
       setJobId(job.job_id);
     },
@@ -45,9 +45,9 @@ export function useAnalysis() {
    * still null right after the mutateAsync resolves).
    */
   const submit = useCallback(
-    async (photoPath: string): Promise<string> => {
+    async (photoPaths: string | string[]): Promise<string> => {
       setJobId(null);
-      const job = await submitMutation.mutateAsync(photoPath);
+      const job = await submitMutation.mutateAsync(photoPaths);
       return job.job_id;
     },
     [submitMutation]

@@ -4,7 +4,7 @@
  */
 
 import { create } from "zustand";
-import { setAuthToken } from "@/services/api";
+import { setAuthToken, setOnUnauthorized } from "@/services/api";
 
 interface AuthState {
   token: string | null;
@@ -40,6 +40,12 @@ export const useAuthStore = create<AuthState>((set) => {
   // Hydrate on first access — sync api token before marking hydrated
   loadToken().then((token) => {
     setAuthToken(token);
+    // Auto-logout on 401 (expired token) — AuthGuard will redirect to onboarding
+    setOnUnauthorized(() => {
+      setAuthToken(null);
+      set({ token: null });
+      saveToken(null);
+    });
     set({ token, hydrated: true });
   });
 

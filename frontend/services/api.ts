@@ -14,6 +14,31 @@ function getBaseUrl(): string {
 
 const BASE_URL = getBaseUrl();
 
+// ── Buddy types ────────────────────────────────────────────────────────────
+
+export interface BuddyMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
+
+export interface BuddyConversation {
+  id: string;
+  title?: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface BuddyConversationDetail {
+  id: string;
+  title?: string;
+  created_at: string;
+  updated_at: string;
+  messages: BuddyMessage[];
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface MacroNutrients {
@@ -33,6 +58,20 @@ export interface FoodItemResult {
   is_hidden_ingredient?: boolean;
 }
 
+export interface FoodSearchResult {
+  food_id: string;
+  name: string;
+  category?: string;
+  source: string;
+  per_100g: {
+    calories: number;
+    protein_g: number;
+    fat_g: number;
+    carbs_g: number;
+    fiber_g: number;
+  };
+}
+
 export interface BloodSugarBreakdown {
   score: number;
   level: "low" | "moderate" | "high";
@@ -50,7 +89,7 @@ export interface BloodSugarBreakdown {
 
 export interface AnalysisResult {
   items: FoodItemResult[];
-  hidden_ingredients: FoodItemResult[];
+  hidden_ingredients?: FoodItemResult[];
   total: MacroNutrients;
   llm_notes?: string;
   llm_confidence?: "high" | "medium" | "low";
@@ -189,9 +228,15 @@ export interface Recommendations {
 // ── Auth store (simple in-memory; replace with SecureStore in prod) ─────────
 
 let _authToken: string | null = null;
+let _onUnauthorized: (() => void) | null = null;
 
 export function setAuthToken(token: string | null) {
   _authToken = token;
+}
+
+/** Called by authStore so any 401 response triggers an automatic logout. */
+export function setOnUnauthorized(cb: (() => void) | null) {
+  _onUnauthorized = cb;
 }
 
 // ── Fetch helper ────────────────────────────────────────────────────────────
@@ -208,9 +253,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const resp = await fetch(`${BASE_URL}${path}`, { ...options, headers });
 
   if (!resp.ok) {
+    if (resp.status === 401) _onUnauthorized?.();
     const body = await resp.json().catch(() => ({}));
     throw new Error(body.detail ?? `HTTP ${resp.status}`);
   }
+  // 204 No Content — DELETE endpoints return no body
+  if (resp.status === 204) return undefined as T;
   return resp.json() as Promise<T>;
 }
 
@@ -260,13 +308,17 @@ export const api = {
   },
 
   // Analysis
-  async submitAnalysis(photoPath: string): Promise<AnalysisJob> {
+  async submitAnalysis(photoPaths: string | string[]): Promise<AnalysisJob> {
+    const paths = Array.isArray(photoPaths) ? photoPaths : [photoPaths];
     const formData = new FormData();
-    formData.append("image", {
-      uri: photoPath,
-      type: "image/jpeg",
-      name: "meal.jpg",
-    } as unknown as Blob);
+    paths.forEach((uri, i) => {
+      // FastAPI expects the field name "images" (List[UploadFile])
+      formData.append("images", {
+        uri,
+        type: "image/jpeg",
+        name: `meal_${i + 1}.jpg`,
+      } as unknown as Blob);
+    });
 
     const headers: Record<string, string> = {};
     if (_authToken) headers["Authorization"] = `Bearer ${_authToken}`;
@@ -278,6 +330,7 @@ export const api = {
     });
 
     if (!resp.ok) {
+      if (resp.status === 401) _onUnauthorized?.();
       const body = await resp.json().catch(() => ({}));
       throw new Error(body.detail ?? `HTTP ${resp.status}`);
     }
@@ -286,6 +339,13 @@ export const api = {
 
   async getAnalysisResult(jobId: string): Promise<AnalysisJob> {
     return request<AnalysisJob>(`/analysis/${jobId}`);
+  },
+
+  async rateAnalysis(jobId: string, rating: "accurate" | "roughly" | "inaccurate"): Promise<void> {
+    return request(`/analysis/${jobId}/rate`, {
+      method: "POST",
+      body: JSON.stringify({ rating }),
+    });
   },
 
   async correctFoodItem(jobId: string, foodItemId: string, correctedLabel?: string, correctedGrams?: number) {
@@ -377,5 +437,137 @@ export const api = {
 
   async deleteFoodItem(mealId: string, itemId: string): Promise<MealDetail> {
     return request<MealDetail>(`/meals/${mealId}/items/${itemId}`, { method: "DELETE" });
+  },
+
+  async addFoodItem(mealId: string, item: {
+    label: string;
+    grams: number;
+    calories: number;
+    protein_g: number;
+    fat_g: number;
+    carbs_g: number;
+    fiber_g: number;
+    nutrition_source: string;
+  }): Promise<MealDetail> {
+    return request<MealDetail>(`/meals/${mealId}/items`, {
+      method: "POST",
+      body: JSON.stringify(item),
+    });
+  },
+
+  async searchFoodsTyped(query: string): Promise<FoodSearchResult[]> {
+    return request<FoodSearchResult[]>(`/nutrition/search?q=${encodeURIComponent(query)}&limit=10`);
+  },
+
+  // ── Buddy ──────────────────────────────────────────────────────────────────
+
+  async getBuddyConversations(): Promise<BuddyConversation[]> {
+    return request<BuddyConversation[]>("/buddy/conversations");
+  },
+
+  async getBuddyConversation(id: string): Promise<BuddyConversationDetail> {
+    return request<BuddyConversationDetail>(`/buddy/conversations/${id}`);
+  },
+
+  async deleteBuddyConversation(id: string): Promise<void> {
+    return request(`/buddy/conversations/${id}`, { method: "DELETE" });
+  },
+
+  async deleteAllBuddyConversations(): Promise<void> {
+    return request("/buddy/conversations", { method: "DELETE" });
+  },
+
+  /**
+   * Opens an SSE stream to /buddy/chat. Calls onDelta for each text chunk,
+   * onConversationId once with the conversation ID, and onDone when finished.
+   * Returns a cleanup function that aborts the fetch.
+   */
+  streamBuddyChat(
+    message: string,
+    conversationId: string | null,
+    onConversationId: (id: string) => void,
+    onDelta: (delta: string) => void,
+    onDone: () => void,
+    onError: (err: string) => void,
+  ): () => void {
+    // React Native's fetch polyfill doesn't support ReadableStream.getReader(),
+    // so we use XHR onprogress which works correctly for SSE in RN.
+    const xhr = new XMLHttpRequest();
+    let buffer          = "";
+    let processedLength = 0;
+    let finished        = false;
+
+    const processChunk = (text: string) => {
+      buffer += text;
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const payload = line.slice(6).trim();
+        if (payload === "[DONE]") {
+          if (!finished) { finished = true; onDone(); }
+          return;
+        }
+        try {
+          const obj = JSON.parse(payload);
+          if (obj.conversation_id) onConversationId(obj.conversation_id);
+          if (obj.delta)           onDelta(obj.delta);
+          if (obj.error)           { if (!finished) { finished = true; onError(obj.error); } return; }
+        } catch { /* ignore malformed SSE lines */ }
+      }
+    };
+
+    xhr.open("POST", `${BASE_URL}/buddy/chat`, true);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    if (_authToken) xhr.setRequestHeader("Authorization", `Bearer ${_authToken}`);
+
+    xhr.onprogress = () => {
+      if (xhr.status === 401) { _onUnauthorized?.(); return; }
+      if (xhr.status !== 200) return;
+      const newText = xhr.responseText.slice(processedLength);
+      processedLength = xhr.responseText.length;
+      processChunk(newText);
+    };
+
+    xhr.onload = () => {
+      if (xhr.status === 401) { _onUnauthorized?.(); return; }
+      if (xhr.status !== 200) {
+        try {
+          const body = JSON.parse(xhr.responseText);
+          onError(body.detail ?? `HTTP ${xhr.status}`);
+        } catch {
+          onError(`HTTP ${xhr.status}`);
+        }
+        return;
+      }
+      // flush any bytes onprogress may have missed
+      const remaining = xhr.responseText.slice(processedLength);
+      if (remaining) processChunk(remaining);
+      if (!finished) { finished = true; onDone(); }
+    };
+
+    xhr.onerror = () => {
+      if (!finished) onError("Connection error");
+    };
+
+    xhr.send(JSON.stringify({ message, conversation_id: conversationId, stream: true }));
+    return () => { finished = true; xhr.abort(); };
+  },
+
+  async patchFoodItem(mealId: string, itemId: string, item: {
+    label: string;
+    grams: number;
+    calories: number;
+    protein_g: number;
+    fat_g: number;
+    carbs_g: number;
+    fiber_g: number;
+    nutrition_source: string;
+  }): Promise<MealDetail> {
+    return request<MealDetail>(`/meals/${mealId}/items/${itemId}`, {
+      method: "PATCH",
+      body: JSON.stringify(item),
+    });
   },
 };

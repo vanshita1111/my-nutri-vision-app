@@ -49,30 +49,35 @@ class NutritionPipeline:
         self._llm_validator       = None
 
     async def load_models(self):
-        """Load all ML models. Called once at FastAPI startup."""
+        """Load ML models. Skips heavy CV models when YOLO weights are absent
+        (vision-only mode) to avoid a 50s+ cold start downloading unused weights."""
         from nutrition_engine.detector import FoodDetector
-        from nutrition_engine.segmentor import FoodSegmentor
-        from nutrition_engine.depth_estimator import DepthEstimator
         from nutrition_engine.llm_validator import LLMValidator
-        from nutrition_engine.secondary_classifier import SecondaryClassifier
 
         self._detector = FoodDetector(_YOLO_PATH, self.device)
         self._detector.load()
-
-        # Secondary EfficientNet classifier — gracefully a no-op if weights absent
-        self._secondary_classifier = SecondaryClassifier()
-        self._secondary_classifier.load()
-
-        self._segmentor = FoodSegmentor(_SAM2_PATH, _SAM2_CONFIG, self.device)
-        self._segmentor.load()
-
-        self._depth_estimator = DepthEstimator(self.device, _DEPTH_ID)
-        self._depth_estimator.load()
-
         self._llm_validator = LLMValidator()
 
+        if not self._detector._use_mock:
+            # YOLO weights present — load the full CV stack
+            from nutrition_engine.segmentor import FoodSegmentor
+            from nutrition_engine.depth_estimator import DepthEstimator
+            from nutrition_engine.secondary_classifier import SecondaryClassifier
+
+            self._secondary_classifier = SecondaryClassifier()
+            self._secondary_classifier.load()
+
+            self._segmentor = FoodSegmentor(_SAM2_PATH, _SAM2_CONFIG, self.device)
+            self._segmentor.load()
+
+            self._depth_estimator = DepthEstimator(self.device, _DEPTH_ID)
+            self._depth_estimator.load()
+
+            log.info("NutritionPipeline: full CV+LLM stack loaded on device=%s", self.device)
+        else:
+            log.info("NutritionPipeline: vision-only mode (no YOLO weights) — skipped SAM2/Depth/EfficientNet")
+
         self.models_ready = True
-        log.info("NutritionPipeline: all models loaded on device=%s", self.device)
 
     async def cleanup(self):
         """Release GPU memory on shutdown."""
@@ -84,28 +89,37 @@ class NutritionPipeline:
         self.models_ready = False
         log.info("NutritionPipeline: models unloaded.")
 
-    async def analyze(self, image_path: str) -> dict:
+    async def analyze(self, image_paths: "list[str] | str") -> dict:
         """
-        Full pipeline: image_path → nutrition report dict.
+        Full pipeline: image_path(s) → nutrition report dict.
+        Accepts a single path (str) or a list of 1-4 paths for multi-photo analysis.
         Safe to call concurrently (each call creates independent local state).
         When YOLO/SAM2 model weights are absent, falls back to Claude Vision
-        for direct food identification — accurate and no model files required.
+        which can cross-reference all supplied photos for higher accuracy.
         """
+        # Normalise to list
+        if isinstance(image_paths, str):
+            image_paths = [image_paths]
+        image_path = image_paths[0]   # primary image for CV stages
+
         from nutrition_engine.detector import preprocess_image
         from nutrition_engine.volume_calculator import calculate_volumes
         from nutrition_engine.gram_converter import volume_to_grams
         from nutrition_engine.nutrition_lookup import lookup_nutrition
 
-        # ── Stage 1: Preprocess (blur check + normalise) ───────────────────────
+        # ── Stage 1: Preprocess (blur check + normalise) on primary image ─────
         try:
             image = preprocess_image(image_path)
         except ValueError as e:
             return {"error": str(e), "items": [], "total": _zero_macros()}
 
-        # ── Vision fallback: if YOLO weights absent, use Claude Vision ─────────
+        # ── Vision fallback: pass all photos to Claude Vision ─────────────────
         if self._detector._use_mock:
-            log.info("YOLO model absent — delegating to Claude Vision for food detection")
-            return await self._llm_validator.analyze_image_with_vision(image_path)
+            log.info(
+                "YOLO model absent — delegating to Claude Vision "
+                "(photos=%d)", len(image_paths)
+            )
+            return await self._llm_validator.analyze_image_with_vision(image_paths)
 
         # ── Stage 2: Detect ────────────────────────────────────────────────────
         detections = self._detector.detect(image)

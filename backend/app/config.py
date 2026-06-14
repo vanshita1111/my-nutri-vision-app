@@ -3,13 +3,22 @@ Application configuration via pydantic-settings.
 All values can be overridden by environment variables or a .env file.
 """
 
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 from typing import Literal
 
+# config.py lives at backend/app/config.py — walk up two levels to reach the
+# nutrition-vision/ root where the shared .env file lives.
+_ROOT_ENV = Path(__file__).resolve().parent.parent.parent / ".env"
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=[str(_ROOT_ENV), ".env"],
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     # App
     APP_ENV: Literal["development", "staging", "production"] = "development"
@@ -42,8 +51,8 @@ class Settings(BaseSettings):
 
     # Claude / Anthropic
     ANTHROPIC_API_KEY: str = ""
-    CLAUDE_MODEL: str = "claude-haiku-4-5-20251001"
-    LLM_MAX_TOKENS: int = 2048
+    CLAUDE_MODEL: str = "claude-sonnet-4-6"
+    LLM_MAX_TOKENS: int = 4096
 
     # Social auth
     GOOGLE_CLIENT_ID: str = ""          # Web OAuth client ID from Google Cloud Console

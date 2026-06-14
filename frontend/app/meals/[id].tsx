@@ -3,7 +3,7 @@
  * full macro breakdown. Accessible from History tab.
  */
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import {
   View,
   Text,
@@ -14,9 +14,11 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { useLocalSearchParams, router } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, MealDetail, FoodItemDetail } from "@/services/api";
 import BloodSugarMeter from "@/components/BloodSugarMeter";
+import ManualFoodModal from "@/components/ManualFoodModal";
 
 const TRASH = "🗑";
 
@@ -68,10 +70,12 @@ function FoodRow({
   item,
   mealId,
   onDeleted,
+  onEdit,
 }: {
   item: FoodItemDetail;
   mealId: string;
   onDeleted: (updated: MealDetail) => void;
+  onEdit: () => void;
 }) {
   const deleteItemMutation = useMutation({
     mutationFn: () => api.deleteFoodItem(mealId, item.id),
@@ -111,12 +115,17 @@ function FoodRow({
             {item.gram_confidence}
           </Text>
         </View>
-        <TouchableOpacity onPress={confirmDeleteItem} hitSlop={8} style={styles.itemDeleteBtn}>
-          {deleteItemMutation.isLoading
-            ? <ActivityIndicator size="small" color="#e53935" />
-            : <Text style={styles.itemDeleteIcon}>{TRASH}</Text>
-          }
-        </TouchableOpacity>
+        <View style={styles.itemActions}>
+          <TouchableOpacity onPress={onEdit} hitSlop={8} style={styles.itemEditBtn}>
+            <Text style={styles.itemEditIcon}>✏️</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={confirmDeleteItem} hitSlop={8} style={styles.itemDeleteBtn}>
+            {deleteItemMutation.isLoading
+              ? <ActivityIndicator size="small" color="#e53935" />
+              : <Text style={styles.itemDeleteIcon}>{TRASH}</Text>
+            }
+          </TouchableOpacity>
+        </View>
       </View>
     </View>
   );
@@ -127,6 +136,9 @@ function FoodRow({
 export default function MealDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const qc = useQueryClient();
+  const insets = useSafeAreaInsets();
+  const [showManualEntry, setShowManualEntry] = useState(false);
+  const [editingItem, setEditingItem] = useState<FoodItemDetail | null>(null);
 
   const { data: meal, isLoading, isError } = useQuery<MealDetail>({
     queryKey: ["meal", id],
@@ -140,6 +152,22 @@ export default function MealDetailScreen() {
     qc.invalidateQueries({ queryKey: ["meals"] });
     qc.invalidateQueries({ queryKey: ["daily-nutrition"] });
     qc.invalidateQueries({ queryKey: ["weekly-summary"] });
+  }
+
+  function handleFoodAdded(updated: MealDetail) {
+    qc.setQueryData(["meal", id], updated);
+    qc.invalidateQueries({ queryKey: ["meals"] });
+    qc.invalidateQueries({ queryKey: ["daily-nutrition"] });
+    qc.invalidateQueries({ queryKey: ["weekly-summary"] });
+    setShowManualEntry(false);
+  }
+
+  function handleFoodEdited(updated: MealDetail) {
+    qc.setQueryData(["meal", id], updated);
+    qc.invalidateQueries({ queryKey: ["meals"] });
+    qc.invalidateQueries({ queryKey: ["daily-nutrition"] });
+    qc.invalidateQueries({ queryKey: ["weekly-summary"] });
+    setEditingItem(null);
   }
 
   const deleteMutation = useMutation({
@@ -198,7 +226,8 @@ export default function MealDetailScreen() {
   const hiddenItems   = meal.food_items.filter((i) => i.is_hidden_ingredient);
 
   return (
-    <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
+    <>
+    <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: insets.top + 8 }]}>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} hitSlop={8}>
@@ -208,8 +237,11 @@ export default function MealDetailScreen() {
           <Text style={styles.title}>Meal Detail</Text>
           <Text style={styles.subtitle}>{date}</Text>
         </View>
-        <TouchableOpacity onPress={confirmDelete} hitSlop={8}>
-          <Text style={styles.deleteBtn}>🗑</Text>
+        <TouchableOpacity onPress={confirmDelete} hitSlop={8} disabled={deleteMutation.isLoading}>
+          {deleteMutation.isLoading
+            ? <ActivityIndicator size="small" color="#e53935" />
+            : <Text style={styles.deleteBtn}>🗑</Text>
+          }
         </TouchableOpacity>
       </View>
 
@@ -232,7 +264,7 @@ export default function MealDetailScreen() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Food Items</Text>
           {visibleItems.map((item) => (
-            <FoodRow key={item.id} item={item} mealId={id} onDeleted={handleItemDeleted} />
+            <FoodRow key={item.id} item={item} mealId={id} onDeleted={handleItemDeleted} onEdit={() => setEditingItem(item)} />
           ))}
         </View>
       )}
@@ -245,10 +277,15 @@ export default function MealDetailScreen() {
             These weren't visible but are typically added during cooking.
           </Text>
           {hiddenItems.map((item) => (
-            <FoodRow key={item.id} item={item} mealId={id} onDeleted={handleItemDeleted} />
+            <FoodRow key={item.id} item={item} mealId={id} onDeleted={handleItemDeleted} onEdit={() => setEditingItem(item)} />
           ))}
         </View>
       )}
+
+      {/* Add food manually */}
+      <TouchableOpacity style={styles.addFoodBtn} onPress={() => setShowManualEntry(true)}>
+        <Text style={styles.addFoodBtnText}>+ Add food manually</Text>
+      </TouchableOpacity>
 
       {/* Blood Sugar Impact */}
       {meal.blood_sugar_impact && (
@@ -266,6 +303,22 @@ export default function MealDetailScreen() {
         </View>
       )}
     </ScrollView>
+
+    <ManualFoodModal
+      visible={showManualEntry}
+      mealId={id}
+      onClose={() => setShowManualEntry(false)}
+      onAdded={handleFoodAdded}
+    />
+    <ManualFoodModal
+      visible={editingItem !== null}
+      mealId={id}
+      replaceItemId={editingItem?.id}
+      initialQuery={editingItem?.label}
+      onClose={() => setEditingItem(null)}
+      onAdded={handleFoodEdited}
+    />
+    </>
   );
 }
 
@@ -352,8 +405,24 @@ const styles = StyleSheet.create({
   foodCal:         { fontSize: 14, fontWeight: "700", color: "#1A1A1A" },
   confBadge:       { borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 },
   confText:        { fontSize: 10, fontWeight: "600" },
-  itemDeleteBtn:   { marginTop: 2, padding: 2 },
+  itemActions:     { flexDirection: "row", gap: 6, alignItems: "center" },
+  itemEditBtn:     { padding: 2 },
+  itemEditIcon:    { fontSize: 13 },
+  itemDeleteBtn:   { padding: 2 },
   itemDeleteIcon:  { fontSize: 13, opacity: 0.5 },
+
+  addFoodBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+    borderColor: "#4CAF50",
+    borderStyle: "dashed",
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 24,
+  },
+  addFoodBtnText: { fontSize: 15, fontWeight: "600", color: "#4CAF50" },
 
   notesCard: {
     backgroundColor: "#E8F5E9",

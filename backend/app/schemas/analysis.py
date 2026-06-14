@@ -8,10 +8,10 @@ from datetime import datetime
 
 
 class MacroNutrients(BaseModel):
-    calories: float = Field(ge=0)
-    protein_g: float = Field(ge=0)
-    fat_g: float = Field(ge=0)
-    carbs_g: float = Field(ge=0)
+    calories: float = Field(default=0.0, ge=0)
+    protein_g: float = Field(default=0.0, ge=0)
+    fat_g: float = Field(default=0.0, ge=0)
+    carbs_g: float = Field(default=0.0, ge=0)
     fiber_g: float = Field(default=0.0, ge=0)
 
 
@@ -80,3 +80,8 @@ class UserCorrectionRequest(BaseModel):
     food_item_id: str
     corrected_label: Optional[str] = None
     corrected_grams: Optional[float] = Field(default=None, gt=0, le=2000)
+
+
+class AccuracyRatingRequest(BaseModel):
+    """1-tap accuracy rating submitted after the user views their result."""
+    rating: Literal["accurate", "roughly", "inaccurate"]
