@@ -185,16 +185,24 @@ export default function HomeScreen() {
     queryFn: () => api.getMeals(20),
   });
 
-  const [refreshing, setRefreshing] = useState(false);
+  const [refreshing,    setRefreshing]    = useState(false);
+  const [loadTimedOut, setLoadTimedOut]  = useState(false);
+
+  // Safety net — stop showing skeleton after 8s regardless of query state
+  useEffect(() => {
+    const t = setTimeout(() => setLoadTimedOut(true), 8000);
+    return () => clearTimeout(t);
+  }, []);
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await Promise.all([refetchProfile(), refetchGoals(), refetchDaily(), refetchMeals()]);
     setRefreshing(false);
   }, [refetchProfile, refetchGoals, refetchDaily, refetchMeals]);
 
-  const showSkeleton =
-    (loadingProfile || loadingGoals || loadingDaily || loadingMeals) &&
-    !profile && !goals && !daily && !meals;
+  // Show skeleton only on first load — never indefinitely if network is down
+  const anyLoading = loadingProfile || loadingGoals || loadingDaily || loadingMeals;
+  const anyData    = !!(profile || goals || daily || meals);
+  const showSkeleton = anyLoading && !anyData && !loadTimedOut;
 
   // Card entrance animation — declared unconditionally (Rules of Hooks)
   const cardOpacity = useRef(new Animated.Value(0)).current;
