@@ -60,7 +60,7 @@ NGROK_PID=$!
 # Wait for the URL to appear
 API_URL=""
 for i in $(seq 1 15); do
-    API_URL=$(grep -oE "https://[a-zA-Z0-9_-]+\.ngrok[a-zA-Z0-9._-]+" "$NGROK_LOG" 2>/dev/null | head -1)
+    API_URL=$(grep -oE "url=https://[^ ]+" "$NGROK_LOG" 2>/dev/null | sed 's/url=//' | head -1)
     [ -n "$API_URL" ] && break
     sleep 1
 done
