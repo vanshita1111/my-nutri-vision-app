@@ -2,6 +2,7 @@
 # Usage: make <target>
 #
 .PHONY: help \
+        mobile \
         dev stop clean logs shell-api shell-db \
         prod prod-stop prod-logs prod-build \
         test test-pipeline lint \
@@ -16,7 +17,9 @@
 help:
 	@echo ""
 	@echo "  ── Development ─────────────────────────────────────────────────"
-	@echo "  make dev               Start all services (postgres, redis, api, worker)"
+	@echo "  make mobile            START HERE — backend + ngrok tunnel + Expo (one command)"
+	@echo "  make mobile-backend    Backend + tunnel only (start Expo separately)"
+	@echo "  make dev               Docker backend only (no tunnel, no Expo)"
 	@echo "  make stop              Stop all dev services"
 	@echo "  make clean             Stop + remove volumes (⚠ deletes all data)"
 	@echo "  make logs              Tail api + worker logs"
@@ -56,6 +59,15 @@ help:
 	@echo ""
 
 # ── Development ───────────────────────────────────────────────────────────────
+
+## One-command dev startup — backend + ngrok tunnel + Expo
+## Run this every time you want to develop. Zero manual config needed.
+mobile:
+	@bash scripts/start-dev.sh
+
+## Backend only (no Expo)
+mobile-backend:
+	@bash scripts/start-dev.sh --no-expo
 
 dev: check-env
 	docker compose up --build -d
