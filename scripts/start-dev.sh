@@ -120,4 +120,4 @@ cleanup() {
 }
 trap cleanup INT TERM
 
-npx expo start --clear
+npx expo start --tunnel --clear
