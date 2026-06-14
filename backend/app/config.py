@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
 
     # CORS
-    ALLOWED_ORIGINS: list[str] = ['http://localhost:3000', 'http://localhost:8081', 'exp://localhost:8081', 'http://localhost:9000', 'https://leone-significance-bear-phones.trycloudflare.com']
+    ALLOWED_ORIGINS: list[str] = ["*"]  # dev only — tighten to specific domains in production
 
     # Image limits
     MAX_IMAGE_SIZE_BYTES: int = 15 * 1024 * 1024  # 15 MB
