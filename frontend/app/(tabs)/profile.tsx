@@ -70,6 +70,11 @@ const HEALTH_CONDITIONS: HealthConditionOption[] = [
 export default function ProfileScreen() {
   const qc = useQueryClient();
   const { logout } = useAuthStore();
+  const [loadTimedOut, setLoadTimedOut] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setLoadTimedOut(true), 8000);
+    return () => clearTimeout(t);
+  }, []);
 
   const { data: profile, isLoading: loadingProfile } = useQuery<UserProfile>({
     queryKey: ["profile"],
@@ -149,7 +154,7 @@ export default function ProfileScreen() {
     onError: (e: Error) => Alert.alert("Could not save", e.message),
   });
 
-  if (loadingProfile) {
+  if (loadingProfile && !loadTimedOut) {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color="#4CAF50" />

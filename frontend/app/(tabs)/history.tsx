@@ -6,7 +6,7 @@ import {
   View, Text, FlatList, StyleSheet, TouchableOpacity,
   ActivityIndicator, RefreshControl, Alert,
 } from "react-native";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { router } from "expo-router";
 import { api, MealSummary } from "@/services/api";
@@ -19,7 +19,12 @@ export default function HistoryScreen() {
     queryFn: () => api.getMeals(30),
   });
 
-  const [refreshing, setRefreshing] = useState(false);
+  const [refreshing,   setRefreshing]   = useState(false);
+  const [loadTimedOut, setLoadTimedOut] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setLoadTimedOut(true), 8000);
+    return () => clearTimeout(t);
+  }, []);
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await refetch();
@@ -49,7 +54,7 @@ export default function HistoryScreen() {
     );
   }
 
-  if (isLoading && !meals) {
+  if (isLoading && !meals && !loadTimedOut) {
     return (
       <FlatList
         style={styles.list}
